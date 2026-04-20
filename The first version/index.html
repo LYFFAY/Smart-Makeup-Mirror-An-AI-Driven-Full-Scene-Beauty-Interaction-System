@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <title>AI化妆镜</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils"></script>
+    <style>
+        body { margin: 0; background: #000; color: white; font-family: sans-serif; overflow: hidden; }
+
+        /* 唤醒界面样式 */
+        #welcome-screen {
+            position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+            background: linear-gradient(135deg, #ff9a9e 0%, #fecfef 100%);
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            z-index: 100; transition: 0.6s; text-align: center;
+            cursor: pointer;
+        }
+
+        /* --- 新增：动态镜子容器样式 --- */
+        #mirror-container {
+            font-size: 80px;
+            margin-bottom: 20px;
+            display: inline-block;
+            /* 赋予呼吸动画：动画名 持续时间 速度曲线 无限循环 */
+            animation: shimmer 2.5s ease-in-out infinite;
+        }
+
+        /* --- 新增：镜子呼吸动画定义 --- */
+        @keyframes shimmer {
+            0% {
+                transform: scale(1) rotate(0deg);
+                text-shadow: 0 0 10px rgba(255, 255, 255, 0);
+            }
+            50% {
+                transform: scale(1.15) rotate(2deg); /* 放大 15%，微旋 */
+                text-shadow: 0 0 30px rgba(255, 255, 255, 0.8), 0 0 10px rgba(255, 209, 220, 0.5); /* 产生白色和粉色的呼吸光晕 */
+            }
+            100% {
+                transform: scale(1) rotate(0deg);
+                text-shadow: 0 0 10px rgba(255, 255, 255, 0);
+            }
+        }
+
+        canvas { transform: scaleX(-1); width: 100vw; height: 100vh; object-fit: cover; }
+        .ui-overlay {
+            position: absolute; top: 20px; left: 20px; z-index: 10;
+            background: rgba(0, 0, 0, 0.8); padding: 20px; border-radius: 15px; width: 280px;
+            border: 1px solid #ff4757; display: none; backdrop-filter: blur(10px);
+        }
+        button { width: 100%; padding: 12px; border-radius: 10px; border: none; background: #ff4757; color: white; font-weight: bold; cursor: pointer; }
+        #ai-msg { margin-top: 15px; font-size: 14px; color: #ffafbd; min-height: 40px; line-height: 1.5; }
+
+        /* 教程链接样式 */
+        #tutorial-link {
+            margin-top: 12px;
+            padding: 10px;
+            background: rgba(255,71,87,0.2);
+            border: 1px solid #ff4757;
+            border-radius: 8px;
+            text-align: center;
+            cursor: pointer;
+            display: none;
+            font-size: 14px;
+            color: #fff;
+        }
+        #tutorial-link:hover {
+            background: rgba(255,71,87,0.4);
+        }
+
+        video { display: none; }
+    </style>
+</head>
+<body>
+    <div id="welcome-screen" onclick="initWakeWord()">
+        <div id="mirror-container">🪞</div>
+        <h1>点击激活 唤醒小镜</h1>
+        <div id="wake-status">等待激活...</div>
+    </div>
+
+    <div class="ui-overlay" id="main-ui">
+        <h3>✨ AI 小镜美妆助手</h3>
+        <button id="voice-btn">🎤 点击说话换妆</button>
+        <div id="ai-msg">小镜已就绪</div>
+
+        <div id="tutorial-link" onclick="openTutorial()">📖 点击查看妆容教程</div>
+    </div>
+
+    <video id="input_video"></video>
+    <canvas id="output_canvas"></canvas>
+
+    <script>
+        const videoElement = document.getElementById('input_video');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+
+        let currentParams = { lip_color: 'rgba(255, 192, 203, 0.3)', gloss: 0.3, blush: 'rgba(255, 182, 193, 0.2)' };
+        let currentTutorialUrl = null;
+        const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        let isActivated = false;
+
+        function aiSpeak(text) {
+            if(!text) return;
+            window.speechSynthesis.cancel();
+            const msg = new SpeechSynthesisUtterance(text);
+            msg.lang = 'zh-CN'; msg.rate = 0.9; msg.pitch = 1.35;
+            window.speechSynthesis.speak(msg);
+        }
+
+        // 打开教程
+        function openTutorial() {
+            if (currentTutorialUrl) {
+                window.open(currentTutorialUrl, '_blank');
+            }
+        }
+
+        // 分开绘制上下唇
+        function drawMakeup(landmarks) {
+            const UPPER_LIP = [61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291, 308, 415, 310, 311, 312, 13, 82, 81, 80, 191, 78, 61];
+            const LOWER_LIP = [61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 324, 318, 402, 317, 14, 87, 178, 88, 95, 78, 61];
+
+            canvasCtx.save();
+            canvasCtx.globalCompositeOperation = "soft-light";
+            canvasCtx.fillStyle = currentParams.lip_color;
+            canvasCtx.filter = "blur(2.5px)";
+
+            fillLipPath(landmarks, UPPER_LIP);
+            fillLipPath(landmarks, LOWER_LIP);
+
+            if (currentParams.gloss > 0) {
+                canvasCtx.globalCompositeOperation = "screen";
+                canvasCtx.fillStyle = `rgba(255, 255, 255, ${currentParams.gloss})`;
+                fillLipPath(landmarks, UPPER_LIP);
+                fillLipPath(landmarks, LOWER_LIP);
+            }
+            canvasCtx.restore();
+            drawBlush(landmarks[234]); drawBlush(landmarks[454]);
+        }
+
+        function fillLipPath(landmarks, indices) {
+            canvasCtx.beginPath();
+            let p0 = landmarks[indices[0]];
+            canvasCtx.moveTo(p0.x * canvasElement.width, p0.y * canvasElement.height);
+            for (let i = 1; i < indices.length; i++) {
+                let p = landmarks[indices[i]];
+                canvasCtx.lineTo(p.x * canvasElement.width, p.y * canvasElement.height);
+            }
+            canvasCtx.fill();
+        }
+
+        function drawBlush(point) {
+            const x = point.x * canvasElement.width, y = point.y * canvasElement.height;
+            const grad = canvasCtx.createRadialGradient(x, y, 0, x, y, canvasElement.width * 0.08);
+            grad.addColorStop(0, currentParams.blush); grad.addColorStop(1, 'transparent');
+            canvasCtx.save(); canvasCtx.globalCompositeOperation = "multiply";
+            canvasCtx.fillStyle = grad; canvasCtx.filter = "blur(10px)";
+            canvasCtx.beginPath(); canvasCtx.arc(x, y, canvasElement.width * 0.08, 0, Math.PI * 2); canvasCtx.fill();
+            canvasCtx.restore();
+        }
+
+        const voiceBtn = document.getElementById('voice-btn');
+        const tutorialLinkEl = document.getElementById('tutorial-link');
+        voiceBtn.onclick = () => {
+            const rec = new Recognition();
+            rec.lang = 'zh-CN';
+            rec.onstart = () => { voiceBtn.innerText = "倾听中..."; };
+            rec.onresult = async (e) => {
+                const text = e.results[0][0].transcript;
+                const res = await fetch(`/api/ai_chat?text=${encodeURIComponent(text)}`);
+                const data = await res.json();
+
+                currentParams = data.params;
+                currentTutorialUrl = data.url;
+                document.getElementById('ai-msg').innerText = "小镜：" + data.reply;
+                aiSpeak(data.reply);
+
+                if (data.url) {
+                    tutorialLinkEl.style.display = "block";
+                } else {
+                    tutorialLinkEl.style.display = "none";
+                }
+            };
+            rec.onend = () => { voiceBtn.innerText = "🎤 点击说话换妆"; };
+            rec.start();
+        };
+
+        function initWakeWord() {
+            if (isActivated) return;
+            const wakeRec = new Recognition();
+            wakeRec.lang = 'zh-CN';
+            wakeRec.onresult = (e) => {
+                const res = e.results[0][0].transcript;
+                if (res.includes("小镜") || res.includes("你好")) {
+                    isActivated = true;
+                    aiSpeak("你好主人，我是小镜。今天想要什么妆容呀。");
+                    document.getElementById('welcome-screen').style.opacity = '0';
+                    setTimeout(() => {
+                        document.getElementById('welcome-screen').style.display = 'none';
+                        document.getElementById('main-ui').style.display = 'block';
+                        startCamera();
+                    }, 600);
+                }
+            };
+            wakeRec.start();
+        }
+
+        function startCamera() {
+            const faceMesh = new FaceMesh({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`});
+            faceMesh.setOptions({
+                maxNumFaces: 1,
+                refineLandmarks: true,
+                minDetectionConfidence: 0.6,
+                minTrackingConfidence: 0.6
+            });
+            faceMesh.onResults((results) => {
+                canvasCtx.save();
+                canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+                canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+                if (results.multiFaceLandmarks) {
+                    for (const landmarks of results.multiFaceLandmarks) drawMakeup(landmarks);
+                }
+                canvasCtx.restore();
+            });
+            new Camera(videoElement, { onFrame: async () => { await faceMesh.send({image: videoElement}); }, width: 1280, height: 720 }).start();
+        }
+
+        window.onresize = () => { canvasElement.width = window.innerWidth; canvasElement.height = window.innerHeight; };
+        window.onresize();
+    </script>
+</body>
+</html>
