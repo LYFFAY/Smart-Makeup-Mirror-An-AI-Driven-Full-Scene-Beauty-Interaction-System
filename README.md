@@ -10,7 +10,7 @@ Focusing on this market gap, this project
 integrates artificial intelligence, realtime visual 
 perception, voice interaction, and cloud
 collaboration technologies to develop a smart 
-makeup mirror system. The system enables realtime facial analysis, personalized beauty 
+makeup mirror system. The system enables real-time facial analysis, personalized beauty 
 recommendations, dynamic makeup program 
 display, and step-by-step voice guidance for home 
 scenarios.
